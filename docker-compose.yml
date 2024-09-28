@@ -9,7 +9,7 @@ services:
     working_dir: /app
     depends_on:
       - mongo
-      - postgres
+      - neo4j
 
   mongo:
     image: mongo:latest
@@ -17,12 +17,11 @@ services:
     ports:
       - "27017:27017"
 
-  postgres:
-    image: postgres:latest
-    container_name: velo-epicurien-postgres
+  neo4j:
+    image: neo4j:latest
+    container_name: velo-epicurien-neo4j
     environment:
-      POSTGRES_USER: user
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: veloepicurien
+      NEO4J_AUTH: neo4j/password
     ports:
-      - "5432:5432"
+      - "7474:7474"  # Port pour l'interface web Neo4j
+      - "7687:7687"  # Port pour le bolt protocol (utilisé par les drivers Neo4j)
