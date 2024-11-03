@@ -1,12 +1,15 @@
+import os
 import osmnx as ox
-import pandas as pd
 from shapely.geometry import Point, LineString
 
 
 def extract_data():
+    if not os.path.exists("data"):
+        os.makedirs("data")
+
     # Extraction des restaurants
     restaurant_tags = {"amenity": "restaurant"}
-    restaurants = ox.geometries_from_place("Paris, Île-de-France, France", restaurant_tags)
+    restaurants = ox.features_from_place("Paris, Île-de-France, France", restaurant_tags)
     if not restaurants.empty:
         restaurants = restaurants.reset_index()
         restaurants['latitude'] = restaurants['geometry'].apply(
@@ -22,7 +25,7 @@ def extract_data():
 
     # Extraction des pistes cyclables
     cycleway_tags = {"highway": "cycleway"}
-    cycleways = ox.geometries_from_place("Paris, Île-de-France, France", cycleway_tags)
+    cycleways = ox.features_from_place("Paris, Île-de-France, France", cycleway_tags)
     if not cycleways.empty:
         cycleways = cycleways.reset_index()
         cycleways['coordinates'] = cycleways['geometry'].apply(
@@ -35,5 +38,4 @@ def extract_data():
     return restaurants, cycleways
 
 
-if __name__ == "__main__":
-    extract_data()
+extract_data()

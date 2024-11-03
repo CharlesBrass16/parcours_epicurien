@@ -1,10 +1,26 @@
+import time
 from pymongo import MongoClient
 from neo4j import GraphDatabase
 import pandas as pd
+import os
+from neo4j.exceptions import ServiceUnavailable
 
+def wait_for_neo4j(driver, timeout=60):
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        try:
+            with driver.session() as session:
+                session.run("RETURN 1")
+            print("Neo4j est prêt.")
+            return True
+        except ServiceUnavailable:
+            print("En attente de Neo4j...")
+            time.sleep(5)
+    raise Exception("Neo4j n'est pas disponible après un délai d'attente.")
 
 def load_to_mongo():
-    client = MongoClient("mongodb://localhost:27017/velo_epicurien")
+    mongo_uri = os.getenv("MONGO_URI", "mongodb://localhost:27017/velo_epicurien")
+    client = MongoClient(mongo_uri)
     db = client['velo_epicurien']
     collection = db['restaurants']
 
@@ -18,7 +34,9 @@ def load_to_mongo():
 
 
 def load_to_neo4j():
-    driver = GraphDatabase.driver("bolt://localhost:7687", auth=("neo4j", "password"))
+    driver = GraphDatabase.driver("bolt://neo4j:7687", auth=("neo4j", "password"))
+    # Attendre que Neo4j soit disponible
+    wait_for_neo4j(driver)
     cycleways = pd.read_csv("data/cycleways_paris_cleaned.csv")
     restaurants = pd.read_csv("data/restaurants_paris_cleaned.csv")
 
@@ -62,6 +80,5 @@ def load_to_neo4j():
         print("Données de restaurants chargées dans Neo4j.")
 
 
-if __name__ == "__main__":
-    load_to_mongo()
-    load_to_neo4j()
+load_to_mongo()
+load_to_neo4j()

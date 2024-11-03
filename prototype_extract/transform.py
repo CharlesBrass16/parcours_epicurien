@@ -69,5 +69,5 @@ def transform_data():
     print("Transformation terminée.")
     return restaurants, cycleways
 
-if __name__ == "__main__":
-    transform_data()
+
+transform_data()

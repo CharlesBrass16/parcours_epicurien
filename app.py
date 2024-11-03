@@ -47,9 +47,9 @@ def transformed_data():
     # Construction de l'objet JSON pour les restaurants
     restaurants_data = {}
     for r_type in restaurant_types:
-        restaurants_data[f"type{r_type['_id']}"] = r_type['count']
+        restaurants_data[f"{r_type['_id']}"] = r_type['count']
     for s_type in service_types:
-        restaurants_data[f"service{s_type['_id']}"] = s_type['count']
+        restaurants_data[f"{s_type['_id']}"] = s_type['count']
 
     # Longueur totale des pistes cyclables
     with neo4j_driver.session() as session:
