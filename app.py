@@ -5,12 +5,12 @@ from neo4j import GraphDatabase
 app = Flask(__name__)
 
 # Connexion à MongoDB
-mongo_client = MongoClient("mongodb://localhost:27017")
+mongo_client = MongoClient("mongodb://mongo:27017/velo_epicurien")
 db = mongo_client['velo_epicurien']
 restaurant_collection = db['restaurants']
 
 # Connexion à Neo4j
-neo4j_driver = GraphDatabase.driver("bolt://localhost:7687", auth=("neo4j", "password"))
+neo4j_driver = GraphDatabase.driver("bolt://neo4j:7687", auth=("neo4j", "password"))
 
 
 @app.route('/heartbeat', methods=['GET'])
@@ -55,8 +55,8 @@ def transformed_data():
     with neo4j_driver.session() as session:
         result = session.run("""
             MATCH (a)-[r:CYCLEWAY]->(b)
-            RETURN sum(distance(point({latitude: a.latitude, longitude: a.longitude}), 
-                               point({latitude: b.latitude, longitude: b.longitude}))) AS totalLength
+            RETURN sum(point.distance(point({latitude: a.latitude, longitude: a.longitude}), 
+                                      point({latitude: b.latitude, longitude: b.longitude}))) AS totalLength
         """)
         longueur_cyclable = result.single()["totalLength"]
 
@@ -64,6 +64,7 @@ def transformed_data():
         "restaurants": restaurants_data,
         "longueurCyclable": longueur_cyclable
     })
+
 
 
 if __name__ == '__main__':

@@ -4,7 +4,6 @@ def format_address(row):
     address_parts = [row.get('addr:housenumber'), row.get('addr:street'), row.get('addr:postcode'), row.get('addr:city')]
     return ", ".join(part for part in address_parts if isinstance(part, str))
 
-
 def determine_service_type(description):
     if pd.isna(description):
         return "Standard"
@@ -31,7 +30,6 @@ def determine_service_type(description):
     else:
         return "Standard"
 
-
 def transform_data():
     # Transformation des restaurants
     restaurants = pd.read_csv("data/restaurants_paris.csv")
@@ -45,8 +43,9 @@ def transform_data():
 
     # Renommer les colonnes en français
     restaurants = restaurants.rename(columns={
+        "osmid": "id_restaurant",
         "name": "nom",
-        "amenity":"type_etablissement",
+        "amenity": "type_etablissement",
         "cuisine": "type_de_restaurant",
         "latitude": "latitude",
         "longitude": "longitude",
@@ -56,7 +55,7 @@ def transform_data():
     })
 
     # Supprimer les colonnes non nécessaires
-    columns_to_keep = ["nom","type_etablissement", "type_de_restaurant", "type_de_service", "latitude", "longitude", "adresse_complete", "telephone", "horaires_ouverture", "description"]
+    columns_to_keep = ["id_restaurant", "nom", "type_etablissement", "type_de_restaurant", "type_de_service", "latitude", "longitude", "adresse_complete", "telephone", "horaires_ouverture", "description"]
     restaurants = restaurants[columns_to_keep]
 
     # Transformation des pistes cyclables
