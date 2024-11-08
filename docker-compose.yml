@@ -10,7 +10,8 @@ services:
     depends_on:
       - mongo
       - neo4j
-
+    environment:
+      MONGO_URI: "mongodb://mongo:27017/velo_epicurien"
   mongo:
     image: mongo:latest
     container_name: velo-epicurien-mongo
