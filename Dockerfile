@@ -7,4 +7,4 @@ RUN pip install -r requirements.txt
 
 COPY . .
 
-CMD ["sh", "-c", "python prototype_extract/extract.py && python prototype_extract/transform.py && python prototype_extract/load.py && python app.py"]
+CMD ["sh", "-c", "python ETL/extract.py && python ETL/transform.py && python ETL/load.py && python app.py"]
