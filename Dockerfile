@@ -7,4 +7,4 @@ RUN pip install -r requirements.txt
 
 COPY . .
 
-CMD ["python", "app.py"]
+CMD ["sh", "-c", "python ETL/extract.py && python ETL/transform.py && python ETL/load.py && python app.py"]

@@ -28,5 +28,16 @@ docker-compose up --build
 
 Une fois le projet démarré, l'application est accessible via :
 ```bash
-http://localhost:8080/heartbeat
+http://localhost:80/heartbeat
 ```
+
+Une fois le projet démarré, la récupération du nombre de restaurants et de segments sont acessibles via :
+```bash
+http://localhost:80/extracted_data
+```
+
+Une fois le projet démarré, les comptes de restaurants par type ainsi que la taille de la piste cyclable sont accessibles via :
+```bash
+http://localhost:80/transformed_data
+```
+
