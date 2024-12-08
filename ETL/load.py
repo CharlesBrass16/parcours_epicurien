@@ -5,7 +5,7 @@ import pandas as pd
 import os
 from neo4j.exceptions import ServiceUnavailable
 
-def wait_for_neo4j(driver, timeout=60):
+def wait_for_neo4j(driver, timeout=6000):
     start_time = time.time()
     while time.time() - start_time < timeout:
         try:
@@ -17,6 +17,56 @@ def wait_for_neo4j(driver, timeout=60):
             print("En attente de Neo4j...")
             time.sleep(5)
     raise Exception("Neo4j n'est pas disponible après un délai d'attente.")
+
+def precompute_starting_points():
+    print("Pré-calcul des starting points...")
+
+    # Charger les données
+    restaurants = pd.read_csv("data/restaurants_paris_cleaned.csv").to_dict(orient="records")
+    mongo_uri = os.getenv("MONGO_URI", "mongodb://localhost:27017/velo_epicurien")
+    client = MongoClient(mongo_uri)
+    db = client['velo_epicurien']
+    starting_points_collection = db['starting_points']
+
+    # Supprimer les anciens starting points
+    starting_points_collection.delete_many({})
+    driver = GraphDatabase.driver("bolt://neo4j:7687", auth=("neo4j", "password"))
+    # Attendre que Neo4j soit disponible
+    wait_for_neo4j(driver)
+    starting_points = []
+    # Préparer les starting points
+    with driver.session() as session:
+        for restaurant in restaurants:
+            lat, lng = restaurant['latitude'], restaurant['longitude']
+
+            # Vérifier si le restaurant est connecté à une piste cyclable
+            result = session.run(
+                """
+                MATCH (r:Restaurant {latitude: $lat, longitude: $lng})
+                MATCH (r)-[:CONNECTED_TO]->(loc:Location)
+                RETURN COUNT(loc) > 0 AS is_connected
+                """,
+                lat=lat, lng=lng
+            )
+
+            if result.single()["is_connected"]:
+                # Ajouter le point de départ avec des métadonnées
+                starting_points.append({
+                    "coordinates": [lng, lat],
+                    "type": restaurant['type_de_restaurant'],
+                    "name": restaurant['nom'],
+                    "connected": True  # Validation pré-calculée
+                })
+
+            # Arrêter après un certain nombre si nécessaire (facultatif)
+            if len(starting_points) >= 100:
+                break
+
+    # Sauvegarder les starting points dans MongoDB
+    starting_points_collection.insert_many(starting_points)
+    print(f"{len(starting_points)} starting points sauvegardés dans MongoDB.")
+
+
 
 def load_to_mongo():
     mongo_uri = os.getenv("MONGO_URI", "mongodb://localhost:27017/velo_epicurien")
@@ -31,6 +81,7 @@ def load_to_mongo():
     restaurants = pd.read_csv("data/restaurants_paris_cleaned.csv").to_dict(orient="records")
     collection.insert_many(restaurants)
     print("Données de restaurants chargées dans MongoDB.")
+
 
 
 def load_to_neo4j():
@@ -53,32 +104,81 @@ def load_to_neo4j():
             for i in range(len(coordinates) - 1):
                 start = coordinates[i]
                 end = coordinates[i + 1]
+                distance = ((end[1] - start[1]) ** 2 + (end[0] - start[0]) ** 2) ** 0.5 * 111139  # Conversion en mètres
+                # Relation dans un sens
                 session.run(
                     """
                     MERGE (a:Location {latitude: $start_lat, longitude: $start_lng})
                     ON CREATE SET a.name = $name
                     MERGE (b:Location {latitude: $end_lat, longitude: $end_lng})
                     ON CREATE SET b.name = $name
-                    MERGE (a)-[:CYCLEWAY {name: $name}]->(b)
+                    MERGE (a)-[r:CYCLEWAY {name: $name}]->(b)
+                    ON CREATE SET r.length = $distance
                     """,
-                    start_lat=start[1], start_lng=start[0], end_lat=end[1], end_lng=end[0], name=name
+                    start_lat=start[1], start_lng=start[0],
+                    end_lat=end[1], end_lng=end[0],
+                    name=name, distance=distance
+                )
+                # Relation dans l'autre sens
+                session.run(
+                    """
+                    MERGE (a:Location {latitude: $end_lat, longitude: $end_lng})
+                    ON CREATE SET a.name = $name
+                    MERGE (b:Location {latitude: $start_lat, longitude: $start_lng})
+                    ON CREATE SET b.name = $name
+                    MERGE (a)-[r:CYCLEWAY {name: $name}]->(b)
+                    ON CREATE SET r.length = $distance
+                    """,
+                    start_lat=start[1], start_lng=start[0],
+                    end_lat=end[1], end_lng=end[0],
+                    name=name, distance=distance
                 )
         print("Données de pistes cyclables chargées dans Neo4j.")
 
-        # Charger les restaurants dans Neo4j avec id_restaurant comme identifiant unique
+        # Charger les restaurants et les connecter au graphe
         for _, row in restaurants.iterrows():
-            session.run(
+            latitude = row['latitude']
+            longitude = row['longitude']
+            name = row['nom'] if pd.notna(row['nom']) else "Inconnu"
+
+            # Connecter chaque restaurant à la piste cyclable la plus proche
+            result = session.run(
                 """
-                MERGE (r:Restaurant {id_restaurant: $id_restaurant})
-                ON CREATE SET r.nom = $nom, r.latitude = $latitude, r.longitude = $longitude
+                MATCH (loc:Location)
+                WITH loc, point.distance(point({latitude: loc.latitude, longitude: loc.longitude}),
+                                         point({latitude: $latitude, longitude: $longitude})) AS dist
+                ORDER BY dist ASC
+                LIMIT 1
+                RETURN loc.latitude AS nearest_lat, loc.longitude AS nearest_lng
                 """,
-                id_restaurant=row['id_restaurant'],
-                nom=row['nom'] if pd.notna(row['nom']) else "Inconnu",
-                latitude=row['latitude'],
-                longitude=row['longitude']
+                latitude=latitude, longitude=longitude
             )
-        print("Données de restaurants chargées dans Neo4j.")
+
+            record = result.single()
+            if record:
+                nearest_lat = record['nearest_lat']
+                nearest_lng = record['nearest_lng']
+
+                session.run(
+                    """
+                    MERGE (r:Restaurant {id_restaurant: $id_restaurant})
+                    ON CREATE SET r.nom = $name, r.latitude = $latitude, r.longitude = $longitude
+                    WITH r
+                    MATCH (loc:Location {latitude: $nearest_lat, longitude: $nearest_lng})
+                    MERGE (r)-[:CONNECTED_TO]->(loc)
+                    """,
+                    id_restaurant=row['id_restaurant'],
+                    name=name,
+                    latitude=latitude,
+                    longitude=longitude,
+                    nearest_lat=nearest_lat,
+                    nearest_lng=nearest_lng
+                )
+
+        print("Restaurants connectés aux pistes cyclables et chargés dans Neo4j.")
 
 
-load_to_mongo()
-load_to_neo4j()
+
+#load_to_mongo()
+#load_to_neo4j()
+#precompute_starting_points()
