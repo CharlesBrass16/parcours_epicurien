@@ -139,9 +139,12 @@ def parcours():
     number_of_stops = data['numberOfStops']  # Nombre d'arrêts souhaités
     types = data.get('type', [])  # Types de restaurants spécifiés (vide = tous les types)
 
-    with neo4j_driver.session() as session:
-        ensure_graph_projected(session)
+    visited = set()  # Ensemble pour stocker les nœuds déjà visités
+    total_distance = 0
+    stops_added = 0
+    features = []  # GeoJSON features pour construire le parcours
 
+    with neo4j_driver.session() as session:
         # Étape 1 : Trouver le nœud de piste cyclable le plus proche du point de départ
         result = session.run(
             """
@@ -163,106 +166,110 @@ def parcours():
             "latitude": nearest_node["lat"],
             "longitude": nearest_node["lng"]
         }
+        visited.add((current_node["latitude"], current_node["longitude"]))
 
-        # Étape 2 : Parcourir le réseau cyclable pour construire le trajet
-        total_distance = 0
-        stops_added = 0
-        features = []  # GeoJSON features pour le trajet
-
+        # Étape 2 : Parcourir le réseau cyclable pour visiter les restaurants
         while total_distance < length * 1.1 and stops_added < number_of_stops:
-            # Trouver le restaurant le plus proche connecté à partir du nœud courant
-            next_restaurant = None
-            min_cost = float('inf')
-            next_segment = None
-
-            # Rechercher les restaurants connectés au réseau cyclable
-            result = session.run(
+            # Vérifier si le nœud courant est connecté à un restaurant du type spécifié
+            restaurant_result = session.run(
                 """
-                MATCH (start:Location {latitude: $current_lat, longitude: $current_lng})
-                MATCH (restaurant:Restaurant)-[:CONNECTED_TO]->(end:Location)
-                CALL gds.shortestPath.dijkstra.stream('cyclewaysGraph', {
-                    sourceNode: id(start),
-                    targetNode: id(end),
-                    relationshipWeightProperty: 'length'
-                })
-                YIELD totalCost, nodeIds
-                RETURN totalCost, nodeIds, restaurant.latitude AS rest_lat,
-                       restaurant.longitude AS rest_lng, restaurant.nom AS name,
-                       restaurant.type_de_restaurant AS type
+                MATCH (current:Location {latitude: $current_lat, longitude: $current_lng})
+                MATCH (restaurant:Restaurant)-[r:CONNECTED_TO]->(current)
+                WHERE r.length < 10  // Filtrer pour s'assurer que la connexion est réaliste
+                RETURN restaurant.nom AS name, restaurant.type_de_restaurant AS type,
+                       restaurant.latitude AS lat, restaurant.longitude AS lng, r.length AS distance
                 """,
                 current_lat=current_node["latitude"],
                 current_lng=current_node["longitude"]
             )
 
-            for record in result:
-                cost = record["totalCost"]
-                restaurant_type = record["type"]
-
-                # Filtrer par type de restaurant et vérifier la distance
-                if (not types or restaurant_type in types) and total_distance + cost <= length * 1.1:
-                    if cost < min_cost:
-                        min_cost = cost
-                        next_restaurant = {
-                            "latitude": record["rest_lat"],
-                            "longitude": record["rest_lng"],
+            found_restaurant = False
+            for record in restaurant_result:
+                if not types or record["type"] in types:  # Filtrer par type de restaurant
+                    # Ajouter le restaurant au parcours
+                    features.append({
+                        "type": "Feature",
+                        "geometry": {
+                            "type": "Point",
+                            "coordinates": [record["lng"], record["lat"]]
+                        },
+                        "properties": {
                             "name": record["name"],
-                            "type": restaurant_type
+                            "type": record["type"],
+                            "distance": record["distance"]
                         }
-                        next_segment = record
+                    })
+                    total_distance += record["distance"]
+                    stops_added += 1
+                    found_restaurant = True
+                    break
 
-            if not next_restaurant:
-                print("Aucun restaurant valide trouvé. Arrêt de la boucle.")
-                break
+            if found_restaurant:
+                continue  # Passer directement au prochain nœud sans chercher de voisins
 
-            # Ajouter le restaurant et le segment au parcours
-            total_distance += min_cost
+            # Sinon, chercher un nœud voisin pour continuer le parcours
+            neighbor_result = session.run(
+                """
+                MATCH (current:Location {latitude: $current_lat, longitude: $current_lng})
+                MATCH (neighbor:Location)-[r:CYCLEWAY]->(current)
+                WHERE NOT (neighbor.latitude = $current_lat AND neighbor.longitude = $current_lng)
+                RETURN neighbor.latitude AS lat, neighbor.longitude AS lng, r.length AS distance
+                """,
+                current_lat=current_node["latitude"],
+                current_lng=current_node["longitude"]
+            )
+
+            next_node = None
+            for record in neighbor_result:
+                candidate = (record["lat"], record["lng"])
+                if candidate not in visited:  # Vérifier si le nœud n'a pas été visité
+                    next_node = {
+                        "latitude": record["lat"],
+                        "longitude": record["lng"],
+                        "distance": record["distance"]
+                    }
+                    break
+
+            if not next_node:
+                break  # Aucun nœud voisin valide trouvé, on arrête la recherche
+
+            # Ajouter le segment cyclable au parcours
+            features.append({
+                "type": "Feature",
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": [
+                        [current_node["longitude"], current_node["latitude"]],
+                        [next_node["longitude"], next_node["latitude"]]
+                    ]
+                },
+                "properties": {
+                    "length": next_node["distance"]
+                }
+            })
+
+            # Mettre à jour l'état du parcours
+            total_distance += next_node["distance"]
             current_node = {
-                "latitude": next_restaurant["latitude"],
-                "longitude": next_restaurant["longitude"]
+                "latitude": next_node["latitude"],
+                "longitude": next_node["longitude"]
             }
-            stops_added += 1
+            visited.add((current_node["latitude"], current_node["longitude"]))
 
-            # Ajouter le restaurant comme point
-            features.append({
-                "type": "Feature",
-                "geometry": {
-                    "type": "Point",
-                    "coordinates": [next_restaurant["longitude"], next_restaurant["latitude"]]
-                },
-                "properties": {
-                    "name": next_restaurant["name"],
-                    "type": next_restaurant["type"]
-                }
-            })
-
-            # Ajouter le segment cyclable
-            coordinates = [
-                [nearest_node["lng"], nearest_node["lat"]] for nearest_node in next_segment["nodeIds"]
-            ]
-            features.append({
-                "type": "Feature",
-                "geometry": {
-                    "type": "MultiLineString",
-                    "coordinates": coordinates
-                },
-                "properties": {
-                    "length": min_cost
-                }
-            })
-
-        # Étape 3 : Vérifier que la longueur totale est respectée
-        if total_distance < length * 0.9 or total_distance > length * 1.1:
-            return jsonify({
-                "error": "Impossible de respecter la longueur spécifiée pour le parcours.",
-                "total_distance": total_distance,
-                "features": features
-            }), 400
-
-        # Retourner le GeoJSON du parcours
+    # Étape 3 : Vérifier que la longueur totale est respectée
+    if total_distance < length * 0.9 or total_distance > length * 1.1:
         return jsonify({
-            "type": "FeatureCollection",
+            "error": "Impossible de respecter la longueur spécifiée pour le parcours.",
+            "total_distance": total_distance,
             "features": features
-        })
+        }), 400
+
+    # Retourner le GeoJSON du parcours
+    return jsonify({
+        "type": "FeatureCollection",
+        "features": features
+    })
+
 
 
 
