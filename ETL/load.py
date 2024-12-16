@@ -149,7 +149,7 @@ def load_to_neo4j():
                                          point({latitude: $latitude, longitude: $longitude})) AS dist
                 ORDER BY dist ASC
                 LIMIT 1
-                RETURN loc.latitude AS nearest_lat, loc.longitude AS nearest_lng
+                RETURN loc.latitude AS nearest_lat, loc.longitude AS nearest_lng, dist AS distance
                 """,
                 latitude=latitude, longitude=longitude
             )
@@ -158,21 +158,37 @@ def load_to_neo4j():
             if record:
                 nearest_lat = record['nearest_lat']
                 nearest_lng = record['nearest_lng']
+                distance = record['distance']  # Distance en mètres
 
+                # Relation dans le sens Restaurant -> Location
                 session.run(
                     """
                     MERGE (r:Restaurant {id_restaurant: $id_restaurant})
                     ON CREATE SET r.nom = $name, r.latitude = $latitude, r.longitude = $longitude
                     WITH r
                     MATCH (loc:Location {latitude: $nearest_lat, longitude: $nearest_lng})
-                    MERGE (r)-[:CONNECTED_TO]->(loc)
+                    MERGE (r)-[rel:CONNECTED_TO {length: $distance}]->(loc)
                     """,
                     id_restaurant=row['id_restaurant'],
                     name=name,
                     latitude=latitude,
                     longitude=longitude,
                     nearest_lat=nearest_lat,
-                    nearest_lng=nearest_lng
+                    nearest_lng=nearest_lng,
+                    distance=distance
+                )
+
+                # Relation dans le sens Location -> Restaurant
+                session.run(
+                    """
+                    MATCH (loc:Location {latitude: $nearest_lat, longitude: $nearest_lng})
+                    MATCH (r:Restaurant {id_restaurant: $id_restaurant})
+                    MERGE (loc)-[rel:CONNECTED_TO {length: $distance}]->(r)
+                    """,
+                    id_restaurant=row['id_restaurant'],
+                    nearest_lat=nearest_lat,
+                    nearest_lng=nearest_lng,
+                    distance=distance
                 )
 
         print("Restaurants connectés aux pistes cyclables et chargés dans Neo4j.")

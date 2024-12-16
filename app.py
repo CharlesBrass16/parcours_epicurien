@@ -128,6 +128,10 @@ def get_starting_point_pre_calculate():
 # Route @POST /parcours
 @app.route('/parcours', methods=['POST'])
 def parcours():
+    """
+    Génère un parcours à partir d'un point de départ, avec une longueur spécifiée
+    et un nombre d'arrêts souhaité.
+    """
     # Lecture des données de la requête
     data = request.get_json()
     starting_point = data['startingPoint']['coordinates']  # Coordonnées du point de départ
@@ -135,86 +139,87 @@ def parcours():
     number_of_stops = data['numberOfStops']  # Nombre d'arrêts souhaités
     types = data.get('type', [])  # Types de restaurants spécifiés (vide = tous les types)
 
-    # Étape 1 : Récupérer les restaurants proches et valider leur connectivité au réseau cyclable
-    nearby_restaurants = list(restaurant_collection.find({
-        "latitude": {"$gt": starting_point[1] - 0.0045, "$lt": starting_point[1] + 0.0045},
-        "longitude": {"$gt": starting_point[0] - 0.0045, "$lt": starting_point[0] + 0.0045}
-    }))
-
-    # Filtrer les restaurants par type
-    if types:
-        nearby_restaurants = [r for r in nearby_restaurants if r['type_de_restaurant'] in types]
-
-    if not nearby_restaurants:
-        return jsonify({"error": "Aucun restaurant correspondant au type spécifié dans le rayon de 500 mètres."}), 404
-
-    # Vérifier la connectivité des restaurants avec Neo4j
-    connected_restaurants = nearby_restaurants
-    # with neo4j_driver.session() as session:
-    #     for restaurant in nearby_restaurants:
-    #         result = session.run(
-    #             """
-    #             MATCH (start:Location {latitude: $start_lat, longitude: $start_lng}),
-    #                   (restaurant:Restaurant)-[:CONNECTED_TO]->(location:Location)
-    #             WHERE location.latitude = $rest_lat AND location.longitude = $rest_lng
-    #             RETURN EXISTS( (start)-[:CYCLEWAY*]->(location) ) AS connected
-    #             """,
-    #             start_lat=starting_point[1], start_lng=starting_point[0],
-    #             rest_lat=restaurant['latitude'], rest_lng=restaurant['longitude']
-    #         )
-    #         record = result.single()
-    #         if record and record["connected"]:  # Vérifier que le résultat n'est pas None
-    #             connected_restaurants.append(restaurant)
-    #
-    # # Si aucun restaurant connecté n'est trouvé, retourner une erreur
-    # if not connected_restaurants:
-    #     return jsonify({"error": "Aucun restaurant connecté au réseau cyclable trouvé."}), 404
-
-    # Étape 2 : Construire le trajet avec Neo4j (Dijkstra) pour respecter la longueur demandée
     with neo4j_driver.session() as session:
         ensure_graph_projected(session)
-        current_point = starting_point
+
+        # Étape 1 : Trouver le nœud de piste cyclable le plus proche du point de départ
+        result = session.run(
+            """
+            MATCH (loc:Location)
+            RETURN loc.latitude AS lat, loc.longitude AS lng,
+                   point.distance(point({latitude: loc.latitude, longitude: loc.longitude}),
+                                  point({latitude: $start_lat, longitude: $start_lng})) AS dist
+            ORDER BY dist ASC
+            LIMIT 1
+            """,
+            start_lat=starting_point[1], start_lng=starting_point[0]
+        )
+
+        nearest_node = result.single()
+        if not nearest_node:
+            return jsonify({"error": "Aucun nœud de piste cyclable trouvé proche du point de départ."}), 404
+
+        current_node = {
+            "latitude": nearest_node["lat"],
+            "longitude": nearest_node["lng"]
+        }
+
+        # Étape 2 : Parcourir le réseau cyclable pour construire le trajet
         total_distance = 0
         stops_added = 0
-        features = []  # GeoJSON features
+        features = []  # GeoJSON features pour le trajet
 
         while total_distance < length * 1.1 and stops_added < number_of_stops:
-            # Trouver le segment le plus court qui reste dans la longueur restante
-            next_segment = None
-            min_cost = float('inf')
+            # Trouver le restaurant le plus proche connecté à partir du nœud courant
             next_restaurant = None
+            min_cost = float('inf')
+            next_segment = None
 
-            for restaurant in connected_restaurants:
-                result = session.run(
-                    """
-                    MATCH (start:Location {latitude: $start_lat, longitude: $start_lng}),
-                          (end:Location {latitude: $end_lat, longitude: $end_lng})
-                    CALL gds.shortestPath.dijkstra.stream('cyclewaysGraph', {
-                        sourceNode: id(start),
-                        targetNode: id(end),
-                        relationshipWeightProperty: 'length'
-                    })
-                    YIELD totalCost, nodeIds
-                    RETURN totalCost, nodeIds
-                    """,
-                    start_lat=current_point[1], start_lng=current_point[0],
-                    end_lat=restaurant['latitude'], end_lng=restaurant['longitude']
-                )
-                for record in result:
-                    cost = record['totalCost']
-                    print(f"Test path to restaurant {restaurant['nom']} with cost {cost} meters")
-                    if cost < min_cost and total_distance + cost <= length * 1.1:
+            # Rechercher les restaurants connectés au réseau cyclable
+            result = session.run(
+                """
+                MATCH (start:Location {latitude: $current_lat, longitude: $current_lng})
+                MATCH (restaurant:Restaurant)-[:CONNECTED_TO]->(end:Location)
+                CALL gds.shortestPath.dijkstra.stream('cyclewaysGraph', {
+                    sourceNode: id(start),
+                    targetNode: id(end),
+                    relationshipWeightProperty: 'length'
+                })
+                YIELD totalCost, nodeIds
+                RETURN totalCost, nodeIds, restaurant.latitude AS rest_lat,
+                       restaurant.longitude AS rest_lng, restaurant.nom AS name,
+                       restaurant.type_de_restaurant AS type
+                """,
+                current_lat=current_node["latitude"],
+                current_lng=current_node["longitude"]
+            )
+
+            for record in result:
+                cost = record["totalCost"]
+                restaurant_type = record["type"]
+
+                # Filtrer par type de restaurant et vérifier la distance
+                if (not types or restaurant_type in types) and total_distance + cost <= length * 1.1:
+                    if cost < min_cost:
                         min_cost = cost
+                        next_restaurant = {
+                            "latitude": record["rest_lat"],
+                            "longitude": record["rest_lng"],
+                            "name": record["name"],
+                            "type": restaurant_type
+                        }
                         next_segment = record
-                        next_restaurant = restaurant
 
-            if not next_segment:
-                print("Aucun segment valide trouvé. Vérifiez les relations ou les projections de graphe.")
+            if not next_restaurant:
+                print("Aucun restaurant valide trouvé. Arrêt de la boucle.")
                 break
 
-            # Ajouter le segment et le restaurant au parcours
+            # Ajouter le restaurant et le segment au parcours
             total_distance += min_cost
-            current_point = [next_restaurant['longitude'], next_restaurant['latitude']]
+            current_node = {
+                "latitude": next_restaurant["latitude"],
+                "longitude": next_restaurant["longitude"]
+            }
             stops_added += 1
 
             # Ajouter le restaurant comme point
@@ -222,47 +227,49 @@ def parcours():
                 "type": "Feature",
                 "geometry": {
                     "type": "Point",
-                    "coordinates": [next_restaurant['longitude'], next_restaurant['latitude']]
+                    "coordinates": [next_restaurant["longitude"], next_restaurant["latitude"]]
                 },
                 "properties": {
-                    "name": next_restaurant['nom'],
-                    "type": next_restaurant['type_de_restaurant']
+                    "name": next_restaurant["name"],
+                    "type": next_restaurant["type"]
                 }
             })
 
             # Ajouter le segment cyclable
+            coordinates = [
+                [nearest_node["lng"], nearest_node["lat"]] for nearest_node in next_segment["nodeIds"]
+            ]
             features.append({
                 "type": "Feature",
                 "geometry": {
                     "type": "MultiLineString",
-                    "coordinates": next_segment['nodeIds']  # Convertir les nœuds en coordonnées
+                    "coordinates": coordinates
                 },
                 "properties": {
                     "length": min_cost
                 }
             })
 
-    # Étape 3 : Vérifier que la longueur totale est dans la plage acceptable
-    if total_distance < length * 0.9 or total_distance > length * 1.1:
-        return jsonify(
-            {
+        # Étape 3 : Vérifier que la longueur totale est respectée
+        if total_distance < length * 0.9 or total_distance > length * 1.1:
+            return jsonify({
                 "error": "Impossible de respecter la longueur spécifiée pour le parcours.",
-                "nearby_restaurants": [serialize_restaurant(r) for r in connected_restaurants],
                 "total_distance": total_distance,
-                "features":features
-            }
-        ), 400
+                "features": features
+            }), 400
 
-    # Retourner le GeoJSON
-    return jsonify({
-        "type": "FeatureCollection",
-        "features": features
-    })
+        # Retourner le GeoJSON du parcours
+        return jsonify({
+            "type": "FeatureCollection",
+            "features": features
+        })
+
 
 
 def serialize_restaurant(restaurant):
-    restaurant['_id'] = str(restaurant['_id'])  # Convertir l'ObjectId en chaîne
+    restaurant['_id'] = str(restaurant['_id'])  # Convertir l'ObjectId en chaîne pour JSON
     return restaurant
+
 
 
 def ensure_graph_projected(session):
