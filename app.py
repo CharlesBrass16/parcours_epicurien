@@ -139,7 +139,7 @@ def starting_point():
     response = {
         "startingPoint": {
             "type": "Point",
-            "coordinates": [latitude, longitude]
+            "coordinates": [longitude, latitude]
         }
     }
 
@@ -290,16 +290,6 @@ def parcours():
     })
 
 
-
-
-
-
-
-def serialize_restaurant(restaurant):
-    restaurant['_id'] = str(restaurant['_id'])  # Convertir l'ObjectId en chaîne pour JSON
-    return restaurant
-
-
 def location_from_restaurant(restaurantName):
     with neo4j_driver.session() as session:
         result = session.run("""
@@ -320,30 +310,28 @@ def location_from_restaurant(restaurantName):
 
 def get_starting_points(latitude, longitude, minLength, maxLength):
     with neo4j_driver.session() as session:
-        result = session.run("""
-                    MATCH (dest:Location {latitude: $lat, longitude: $lon}) 
-                    CALL(dest) {
-                        MATCH path = (dest)-[:CYCLEWAY*]->(startingPoint)
-                        WITH path,
-                            reduce(totalDist = 0, i IN range(1, size(nodes(path)) - 1) | 
-                                totalDist + point.distance(
-                                    point({latitude: nodes(path)[i-1].latitude, longitude: nodes(path)[i-1].longitude}),
-                                    point({latitude: nodes(path)[i].latitude, longitude: nodes(path)[i].longitude})
-                                )
-                            ) AS cumulativeDistance,
-                            last(nodes(path)) AS lastNode
-                        WHERE cumulativeDistance >= $minDist AND cumulativeDistance <= $maxDist
-                        RETURN lastNode, cumulativeDistance
-                        ORDER BY cumulativeDistance DESC
-                        LIMIT 1
-                    }
-                    RETURN lastNode, cumulativeDistance
-                """,
-                             lat=latitude, lon=longitude, minDist=minLength, maxDist=maxLength)
+        result = session.run(
+            """
+            MATCH path = (start:Location {latitude: $lat, longitude: $lon})-[:CYCLEWAY*..10]->(end:Location)
+            WITH path, 
+                 reduce(distance = 0, rel IN relationships(path) | distance + rel.length) AS totalDistance, 
+                 nodes(path)[-1] AS lastNode
+            WHERE totalDistance >= $minDist AND totalDistance <= $maxDist
+            RETURN lastNode, totalDistance
+            ORDER BY totalDistance DESC
+            LIMIT 1
+            """,
+            lat=latitude,
+            lon=longitude,
+            minDist=minLength,
+            maxDist=maxLength
+        )
+
         resList = []
         for record in result:
             resList.append(record)
         return resList
+
 
 
 def calculate_distance(lat1, lng1, lat2, lng2):
@@ -359,6 +347,7 @@ def calculate_distance(lat1, lng1, lat2, lng2):
     c = 2 * atan2(sqrt(a), sqrt(1 - a))
 
     return R * c
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=80)
