@@ -18,55 +18,6 @@ def wait_for_neo4j(driver, timeout=6000):
             time.sleep(5)
     raise Exception("Neo4j n'est pas disponible après un délai d'attente.")
 
-def precompute_starting_points():
-    print("Pré-calcul des starting points...")
-
-    # Charger les données
-    restaurants = pd.read_csv("data/restaurants_paris_cleaned.csv").to_dict(orient="records")
-    mongo_uri = os.getenv("MONGO_URI", "mongodb://localhost:27017/velo_epicurien")
-    client = MongoClient(mongo_uri)
-    db = client['velo_epicurien']
-    starting_points_collection = db['starting_points']
-
-    # Supprimer les anciens starting points
-    starting_points_collection.delete_many({})
-    driver = GraphDatabase.driver("bolt://neo4j:7687", auth=("neo4j", "password"))
-    # Attendre que Neo4j soit disponible
-    wait_for_neo4j(driver)
-    starting_points = []
-    # Préparer les starting points
-    with driver.session() as session:
-        for restaurant in restaurants:
-            lat, lng = restaurant['latitude'], restaurant['longitude']
-
-            # Vérifier si le restaurant est connecté à une piste cyclable
-            result = session.run(
-                """
-                MATCH (r:Restaurant {latitude: $lat, longitude: $lng})
-                MATCH (r)-[:CONNECTED_TO]->(loc:Location)
-                RETURN COUNT(loc) > 0 AS is_connected
-                """,
-                lat=lat, lng=lng
-            )
-
-            if result.single()["is_connected"]:
-                # Ajouter le point de départ avec des métadonnées
-                starting_points.append({
-                    "coordinates": [lng, lat],
-                    "type": restaurant['type_de_restaurant'],
-                    "name": restaurant['nom'],
-                    "connected": True  # Validation pré-calculée
-                })
-
-            # Arrêter après un certain nombre si nécessaire (facultatif)
-            if len(starting_points) >= 100:
-                break
-
-    # Sauvegarder les starting points dans MongoDB
-    starting_points_collection.insert_many(starting_points)
-    print(f"{len(starting_points)} starting points sauvegardés dans MongoDB.")
-
-
 
 def load_to_mongo():
     mongo_uri = os.getenv("MONGO_URI", "mongodb://localhost:27017/velo_epicurien")
@@ -195,6 +146,5 @@ def load_to_neo4j():
 
 
 
-#load_to_mongo()
-#load_to_neo4j()
-#precompute_starting_points()
+load_to_mongo()
+load_to_neo4j()
