@@ -106,7 +106,7 @@ def starting_point():
     random_restaurant = None
 
     max_length = length * 1.1
-    min_length = length * 0.9
+    min_length = 20
     result = []
 
     # Recherche de resto par type
@@ -171,19 +171,19 @@ def parcours():
 
     # Valider les informations avec le cache global
     last_starting_point = global_cache.get("last_starting_point")
-    # if not last_starting_point or \
-    #         last_starting_point["coordinates"] != starting_point or \
-    #         last_starting_point["length"] != length or \
-    #         last_starting_point["types"] != types:
-    #     return jsonify({
-    #         "error": "Le starting point ne correspond pas aux informations précédemment générées.",
-    #         "expected": last_starting_point,
-    #         "received": {
-    #             "coordinates": starting_point,
-    #             "length": length,
-    #             "types": types
-    #         }
-    #     }), 400
+    if not last_starting_point or \
+            last_starting_point["coordinates"] != starting_point or \
+            last_starting_point["length"] != length or \
+            last_starting_point["types"] != types:
+        return jsonify({
+            "error": "Le starting point ne correspond pas aux informations précédemment générées.",
+            "expected": last_starting_point,
+            "received": {
+                "coordinates": starting_point,
+                "length": length,
+                "types": types
+            }
+        }), 400
 
     features = []  # Liste des éléments GeoJSON
     total_distance = 0
@@ -226,7 +226,7 @@ def parcours():
 
             next_restaurant = None
             for record in restaurant_result:
-                if record["dist"] < 100 and record["name"] not in visited_restaurants:
+                if record["dist"] < 30 and record["name"] not in visited_restaurants:
                     # Rechercher le type du restaurant dans MongoDB
                     mongo_restaurant = restaurant_collection.find_one({"id_restaurant": record["id_restaurant"]})
                     if mongo_restaurant:
