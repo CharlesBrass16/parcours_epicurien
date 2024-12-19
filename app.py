@@ -14,6 +14,10 @@ restaurant_collection = db['restaurants']
 # Connexion à Neo4j
 neo4j_driver = GraphDatabase.driver("bolt://neo4j:7687", auth=("neo4j", "password"))
 
+# Cache global pour le dernier starting point
+global_cache = {
+    "last_starting_point": None  # Pour stocker les coordonnées, le length, et les types
+}
 
 @app.route('/heartbeat', methods=['GET'])
 def heartbeat():
@@ -75,7 +79,7 @@ def download_file():
         return send_file('README.md', as_attachment=True)
     except FileNotFoundError:
         # Devrait jamais arriver
-        return {"error": "README.md not found"}, 404
+        return {"error": "README.md non trouvé"}, 404
 
 
 @app.route('/type', methods=['GET'])
@@ -129,11 +133,18 @@ def starting_point():
                                          max_length)
 
     if result == []:
-        return "No valid restaurant found for these types and distance", 404
+        return "Aucun restaurant valide trouvé pour ces types et cette distance", 404
 
     result = random.choice(result)
     latitude = result['lastNode'].get('latitude')
     longitude = result['lastNode'].get('longitude')
+
+    # Mettre à jour le cache global
+    global_cache["last_starting_point"] = {
+        "coordinates": [longitude, latitude],
+        "length": length,
+        "types": types
+    }
 
     # Créer la réponse
     response = {
@@ -157,6 +168,22 @@ def parcours():
     length = data['length']
     number_of_stops = data['numberOfStops']
     types = data.get('type', [])
+
+    # Valider les informations avec le cache global
+    last_starting_point = global_cache.get("last_starting_point")
+    if not last_starting_point or \
+            last_starting_point["coordinates"] != starting_point or \
+            last_starting_point["length"] != length or \
+            last_starting_point["types"] != types:
+        return jsonify({
+            "error": "Le starting point ne correspond pas aux informations précédemment générées.",
+            "expected": last_starting_point,
+            "received": {
+                "coordinates": starting_point,
+                "length": length,
+                "types": types
+            }
+        }), 400
 
     features = []  # Liste des éléments GeoJSON
     total_distance = 0
