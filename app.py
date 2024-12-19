@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_file
 from pymongo import MongoClient
 from neo4j import GraphDatabase
 import random
@@ -67,62 +67,82 @@ def transformed_data():
     })
 
 
-# Route @GET /type
+@app.route('/readme', methods=['GET'])
+def download_file():
+    try:
+        # Fichier readMe
+        return send_file('README.md', as_attachment=True)
+    except FileNotFoundError:
+        # Devrait jamais arriver
+        return {"error": "README.md not found"}, 404
+
+
 @app.route('/type', methods=['GET'])
-def get_types():
-    types = restaurant_collection.distinct("type_de_restaurant")
-    return jsonify(types)
+def type():
+    # Types de restaurants
+    restaurant_types = restaurant_collection.aggregate([
+        {"$group": {"_id": "$type_de_restaurant"}}
+    ])
 
-# Route @POST /starting_point
+    restaurants_data = []
+    for r_type in restaurant_types:
+        restaurants_data.append(r_type["_id"])
+
+    return jsonify(list(set(restaurants_data)))
+
+
 @app.route('/starting_point', methods=['POST'])
-def get_starting_point():
-    data = request.json
-    length = data.get("length", 0)
-    types = data.get("type", [])
+def starting_point():
+    payload = request.get_json()
 
-    # Filtrer les restaurants par type
-    query = {"type_de_restaurant": {"$in": types}} if types else {}
-    restaurants = list(restaurant_collection.find(query, {"latitude": 1, "longitude": 1}))
+    # Données de la request
+    length = payload["length"]  # int
+    types = payload["type"]  # Liste de strings
+    random_restaurant = None
 
-    if not restaurants:
-        return jsonify({"error": "No restaurants found"}), 404
+    max_length = length * 1.1
+    min_length = length * 0.9
+    result = []
 
-    # Choisir un point de départ aléatoire
-    selected_restaurant = random.choice(restaurants)
-    point = {
-        "type": "Point",
-        "coordinates": [selected_restaurant["longitude"], selected_restaurant["latitude"]]
+    # Recherche de resto par type
+    if types == []:
+        while result == []:
+            random_restaurant = restaurant_collection.aggregate([{'$sample': {'size': 1}}]).next()
+            try:
+                point_recherche = location_from_restaurant(random_restaurant['nom'])
+            except:
+                continue
+            result = get_starting_points(point_recherche['latitude'], point_recherche['longitude'], min_length,
+                                         max_length)
+
+    else:
+        restaurants = list(restaurant_collection.find({'type_de_restaurant': {'$in': types}}))
+        while result == [] and restaurants != []:
+            random_restaurant = random.choice(restaurants)
+            restaurants.remove(random_restaurant)
+            try:
+                point_recherche = location_from_restaurant(random_restaurant['nom'])
+            except:
+                continue
+            result = get_starting_points(point_recherche['latitude'], point_recherche['longitude'], min_length,
+                                         max_length)
+
+    if result == []:
+        return "No valid restaurant found for these types and distance", 404
+
+    result = random.choice(result)
+    latitude = result['lastNode'].get('latitude')
+    longitude = result['lastNode'].get('longitude')
+
+    # Créer la réponse
+    response = {
+        "startingPoint": {
+            "type": "Point",
+            "coordinates": [latitude, longitude]
+        }
     }
 
-    return jsonify({"startingPoint": point})
-
-@app.route('/starting_point_pre_calculate', methods=['GET'])
-def get_starting_point_pre_calculate():
-    """
-    Recherche un point de départ valide basé sur les données précalculées
-    dans la collection 'starting_points'.
-    """
-
-    # Filtrer les starting points par type
-    query = {}
-
-
-    # Chercher les starting points
-    starting_points = list(db['starting_points'].find(query))
-
-    if not starting_points:
-        return jsonify({"error": "Aucun point de départ valide trouvé pour les critères spécifiés."}), 404
-
-    # Choisir un starting point aléatoire parmi ceux qui conviennent
-    selected_point = random.choice(starting_points)
-
-    # Sérialiser chaque starting point dans la liste
-    serialized_starting_point = {
-        "_id": str(selected_point["_id"]),  # Convertir ObjectId en chaîne
-        **{key: value for key, value in selected_point.items() if key != "_id"}  # Inclure les autres champs
-    }
-
-    return jsonify({"startingPoint": serialized_starting_point})
+    return jsonify(response), 200
 
 
 # Route @POST /parcours
@@ -139,7 +159,8 @@ def parcours():
     number_of_stops = data['numberOfStops']  # Nombre d'arrêts souhaités
     types = data.get('type', [])  # Types de restaurants spécifiés (vide = tous les types)
 
-    visited = set()  # Ensemble pour stocker les nœuds déjà visités
+    visited_nodes = set()  # Ensemble pour stocker les nœuds de piste visités
+    visited_restaurants = set()  # Ensemble pour stocker les restaurants visités
     total_distance = 0
     stops_added = 0
     features = []  # GeoJSON features pour construire le parcours
@@ -166,18 +187,17 @@ def parcours():
             "latitude": nearest_node["lat"],
             "longitude": nearest_node["lng"]
         }
-        visited.add((current_node["latitude"], current_node["longitude"]))
+        visited_nodes.add((current_node["latitude"], current_node["longitude"]))
 
         # Étape 2 : Parcourir le réseau cyclable pour visiter les restaurants
         while total_distance < length * 1.1 and stops_added < number_of_stops:
-            # Vérifier si le nœud courant est connecté à un restaurant du type spécifié
+            # Vérifier si le nœud courant est connecté à un restaurant
             restaurant_result = session.run(
                 """
                 MATCH (current:Location {latitude: $current_lat, longitude: $current_lng})
                 MATCH (restaurant:Restaurant)-[r:CONNECTED_TO]->(current)
-                WHERE r.length < 10  // Filtrer pour s'assurer que la connexion est réaliste
-                RETURN restaurant.nom AS name, restaurant.type_de_restaurant AS type,
-                       restaurant.latitude AS lat, restaurant.longitude AS lng, r.length AS distance
+                WHERE r.length < 10  // Filtrer pour une distance réaliste
+                RETURN restaurant.id_restaurant AS id_restaurant, r.length AS distance
                 """,
                 current_lat=current_node["latitude"],
                 current_lng=current_node["longitude"]
@@ -185,24 +205,37 @@ def parcours():
 
             found_restaurant = False
             for record in restaurant_result:
-                if not types or record["type"] in types:  # Filtrer par type de restaurant
-                    # Ajouter le restaurant au parcours
-                    features.append({
-                        "type": "Feature",
-                        "geometry": {
-                            "type": "Point",
-                            "coordinates": [record["lng"], record["lat"]]
-                        },
-                        "properties": {
-                            "name": record["name"],
-                            "type": record["type"],
-                            "distance": record["distance"]
-                        }
-                    })
-                    total_distance += record["distance"]
-                    stops_added += 1
-                    found_restaurant = True
-                    break
+                restaurant_id = record["id_restaurant"]
+                if restaurant_id in visited_restaurants:
+                    continue  # Passer au prochain restaurant si celui-ci a déjà été visité
+
+                # Récupérer les détails du restaurant depuis MongoDB
+                restaurant_details = restaurant_collection.find_one({"id_restaurant": restaurant_id})
+                if not restaurant_details:
+                    continue
+
+                # Filtrer par type de restaurant si nécessaire
+                if types and restaurant_details["type_de_restaurant"] not in types:
+                    continue
+
+                # Ajouter le restaurant au parcours
+                features.append({
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "Point",
+                        "coordinates": [restaurant_details["longitude"], restaurant_details["latitude"]]
+                    },
+                    "properties": {
+                        "name": restaurant_details["nom"],
+                        "type": restaurant_details["type_de_restaurant"],
+                        "distance": record["distance"]
+                    }
+                })
+                total_distance += record["distance"]
+                visited_restaurants.add(restaurant_id)
+                stops_added += 1
+                found_restaurant = True
+                break
 
             if found_restaurant:
                 continue  # Passer directement au prochain nœud sans chercher de voisins
@@ -222,7 +255,7 @@ def parcours():
             next_node = None
             for record in neighbor_result:
                 candidate = (record["lat"], record["lng"])
-                if candidate not in visited:  # Vérifier si le nœud n'a pas été visité
+                if candidate not in visited_nodes:  # Vérifier si le nœud n'a pas été visité
                     next_node = {
                         "latitude": record["lat"],
                         "longitude": record["lng"],
@@ -254,7 +287,7 @@ def parcours():
                 "latitude": next_node["latitude"],
                 "longitude": next_node["longitude"]
             }
-            visited.add((current_node["latitude"], current_node["longitude"]))
+            visited_nodes.add((current_node["latitude"], current_node["longitude"]))
 
     # Étape 3 : Vérifier que la longueur totale est respectée
     if total_distance < length * 0.9 or total_distance > length * 1.1:
@@ -269,6 +302,7 @@ def parcours():
         "type": "FeatureCollection",
         "features": features
     })
+
 
 
 
@@ -300,6 +334,51 @@ def ensure_graph_projected(session):
     else:
         print("Le graphe 'cyclewaysGraph' existe déjà.")
 
+
+def location_from_restaurant(restaurantName):
+    with neo4j_driver.session() as session:
+        result = session.run("""
+                    MATCH (restaurant:Restaurant {nom: $nom})
+                    MATCH (pointPiste:Location)
+                    WITH 
+                        point({latitude: restaurant.latitude, longitude: restaurant.longitude}) AS restaurantPoint,
+                        point({latitude: pointPiste.latitude, longitude: pointPiste.longitude}) AS pointPisteCoords,
+                        pointPiste
+                    WITH pointPiste, point.distance(restaurantPoint, pointPisteCoords) AS distance
+                    RETURN pointPiste
+                    ORDER BY distance ASC
+                    LIMIT 1
+                """,
+                             nom=restaurantName)
+        return result.single()["pointPiste"]
+
+
+def get_starting_points(latitude, longitude, minLength, maxLength):
+    with neo4j_driver.session() as session:
+        result = session.run("""
+                    MATCH (dest:Location {latitude: $lat, longitude: $lon}) 
+                    CALL(dest) {
+                        MATCH path = (dest)-[:CYCLEWAY*]->(startingPoint)
+                        WITH path,
+                            reduce(totalDist = 0, i IN range(1, size(nodes(path)) - 1) | 
+                                totalDist + point.distance(
+                                    point({latitude: nodes(path)[i-1].latitude, longitude: nodes(path)[i-1].longitude}),
+                                    point({latitude: nodes(path)[i].latitude, longitude: nodes(path)[i].longitude})
+                                )
+                            ) AS cumulativeDistance,
+                            last(nodes(path)) AS lastNode
+                        WHERE cumulativeDistance >= $minDist AND cumulativeDistance <= $maxDist
+                        RETURN lastNode, cumulativeDistance
+                        ORDER BY cumulativeDistance DESC
+                        LIMIT 1
+                    }
+                    RETURN lastNode, cumulativeDistance
+                """,
+                             lat=latitude, lon=longitude, minDist=minLength, maxDist=maxLength)
+        resList = []
+        for record in result:
+            resList.append(record)
+        return resList
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=80)
