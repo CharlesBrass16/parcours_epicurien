@@ -1,6 +1,7 @@
 from flask import Flask, jsonify, request, send_file
 from pymongo import MongoClient
 from neo4j import GraphDatabase
+from math import radians, cos, sin, sqrt, atan2
 import random
 
 app = Flask(__name__)
@@ -161,6 +162,7 @@ def parcours():
     total_distance = 0
     stops_added = 0
     visited_restaurants = set()  # Ensemble pour garder la trace des restaurants visités
+    current_multiline = []  # Accumulateur pour MultiLineString
 
     with neo4j_driver.session() as session:
         # Trouver le nœud de piste cyclable le plus proche dans un rayon de 500 mètres
@@ -180,8 +182,8 @@ def parcours():
             return jsonify({"error": "Aucun nœud de piste cyclable trouvé dans un rayon de 500 mètres."}), 400
 
         current_node = {"latitude": nearest_node["lat"], "longitude": nearest_node["lng"]}
+        current_multiline.append([current_node["longitude"], current_node["latitude"]])  # Ajouter le premier point
 
-        # Ajouter le premier segment cyclable du point de départ au premier restaurant
         while total_distance < length * 1.1 and stops_added < number_of_stops:
             # Trouver les restaurants connectés au nœud courant
             restaurant_result = session.run(
@@ -204,6 +206,25 @@ def parcours():
                     break
 
             if next_restaurant:
+                # Finaliser le segment MultiLineString jusqu'au restaurant
+                current_multiline.append([next_restaurant["lng"], next_restaurant["lat"]])
+                features.append({
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "MultiLineString",
+                        "coordinates": [current_multiline]
+                    },
+                    "properties": {
+                        "length": sum(
+                            calculate_distance(
+                                current_multiline[i][1], current_multiline[i][0],
+                                current_multiline[i + 1][1], current_multiline[i + 1][0]
+                            ) for i in range(len(current_multiline) - 1)
+                        )
+                    }
+                })
+                current_multiline = [[next_restaurant["lng"], next_restaurant["lat"]]]  # Réinitialiser pour le prochain segment
+
                 # Ajouter le restaurant au parcours
                 features.append({
                     "type": "Feature",
@@ -219,23 +240,6 @@ def parcours():
                 })
                 stops_added += 1
                 visited_restaurants.add(next_restaurant["name"])
-
-                # Ajouter le segment cyclable
-                features.append({
-                    "type": "Feature",
-                    "geometry": {
-                        "type": "MultiLineString",
-                        "coordinates": [[
-                            [current_node["longitude"], current_node["latitude"]],
-                            [next_restaurant["lng"], next_restaurant["lat"]]
-                        ]]
-                    },
-                    "properties": {
-                        "length": next_restaurant["dist"]
-                    }
-                })
-
-                # Mettre à jour le nœud courant
                 current_node = {"latitude": next_restaurant["lat"], "longitude": next_restaurant["lng"]}
                 total_distance += next_restaurant["dist"]
 
@@ -260,20 +264,8 @@ def parcours():
                         "features": features
                     }), 400
 
-                # Ajouter le segment cyclable
-                features.append({
-                    "type": "Feature",
-                    "geometry": {
-                        "type": "MultiLineString",
-                        "coordinates": [[
-                            [current_node["longitude"], current_node["latitude"]],
-                            [next_node["lng"], next_node["lat"]]
-                        ]]
-                    },
-                    "properties": {
-                        "length": next_node["dist"]
-                    }
-                })
+                # Ajouter au segment courant
+                current_multiline.append([next_node["lng"], next_node["lat"]])
                 current_node = {"latitude": next_node["lat"], "longitude": next_node["lng"]}
                 total_distance += next_node["dist"]
 
@@ -291,10 +283,14 @@ def parcours():
                 "total_distance": total_distance,
                 "features": features
             }), 400
+
     return jsonify({
         "type": "FeatureCollection",
         "features": features
     })
+
+
+
 
 
 
@@ -348,6 +344,21 @@ def get_starting_points(latitude, longitude, minLength, maxLength):
         for record in result:
             resList.append(record)
         return resList
+
+
+def calculate_distance(lat1, lng1, lat2, lng2):
+    """
+    Calcule la distance en mètres entre deux points géographiques en utilisant la formule haversine.
+    """
+    R = 6371000  # Rayon de la Terre en mètres
+    phi1, phi2 = radians(lat1), radians(lat2)
+    delta_phi = radians(lat2 - lat1)
+    delta_lambda = radians(lng2 - lng1)
+
+    a = sin(delta_phi / 2) ** 2 + cos(phi1) * cos(phi2) * sin(delta_lambda / 2) ** 2
+    c = 2 * atan2(sqrt(a), sqrt(1 - a))
+
+    return R * c
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=80)
