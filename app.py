@@ -145,28 +145,25 @@ def starting_point():
     return jsonify(response), 200
 
 
-# Route @POST /parcours
 @app.route('/parcours', methods=['POST'])
 def parcours():
     """
     Génère un parcours à partir d'un point de départ, avec une longueur spécifiée
     et un nombre d'arrêts souhaité.
     """
-    # Lecture des données de la requête
     data = request.get_json()
-    starting_point = data['startingPoint']['coordinates']  # Coordonnées du point de départ
-    length = data['length']  # Longueur du parcours en mètres
-    number_of_stops = data['numberOfStops']  # Nombre d'arrêts souhaités
-    types = data.get('type', [])  # Types de restaurants spécifiés (vide = tous les types)
+    starting_point = data['startingPoint']['coordinates']
+    length = data['length']
+    number_of_stops = data['numberOfStops']
+    types = data.get('type', [])
 
-    visited_nodes = set()  # Ensemble pour stocker les nœuds de piste visités
-    visited_restaurants = set()  # Ensemble pour stocker les restaurants visités
+    features = []  # Liste des éléments GeoJSON
     total_distance = 0
     stops_added = 0
-    features = []  # GeoJSON features pour construire le parcours
+    visited_restaurants = set()  # Ensemble pour garder la trace des restaurants visités
 
     with neo4j_driver.session() as session:
-        # Étape 1 : Trouver le nœud de piste cyclable le plus proche du point de départ
+        # Trouver le nœud de piste cyclable le plus proche dans un rayon de 500 mètres
         result = session.run(
             """
             MATCH (loc:Location)
@@ -178,126 +175,122 @@ def parcours():
             """,
             start_lat=starting_point[1], start_lng=starting_point[0]
         )
-
         nearest_node = result.single()
-        if not nearest_node:
-            return jsonify({"error": "Aucun nœud de piste cyclable trouvé proche du point de départ."}), 404
+        if not nearest_node or nearest_node["dist"] > 500:
+            return jsonify({"error": "Aucun nœud de piste cyclable trouvé dans un rayon de 500 mètres."}), 400
 
-        current_node = {
-            "latitude": nearest_node["lat"],
-            "longitude": nearest_node["lng"]
-        }
-        visited_nodes.add((current_node["latitude"], current_node["longitude"]))
+        current_node = {"latitude": nearest_node["lat"], "longitude": nearest_node["lng"]}
 
-        # Étape 2 : Parcourir le réseau cyclable pour visiter les restaurants
+        # Ajouter le premier segment cyclable du point de départ au premier restaurant
         while total_distance < length * 1.1 and stops_added < number_of_stops:
-            # Vérifier si le nœud courant est connecté à un restaurant
+            # Trouver les restaurants connectés au nœud courant
             restaurant_result = session.run(
                 """
-                MATCH (current:Location {latitude: $current_lat, longitude: $current_lng})
-                MATCH (restaurant:Restaurant)-[r:CONNECTED_TO]->(current)
-                WHERE r.length < 10  // Filtrer pour une distance réaliste
-                RETURN restaurant.id_restaurant AS id_restaurant, r.length AS distance
+                MATCH (start:Location {latitude: $current_lat, longitude: $current_lng})
+                MATCH (restaurant:Restaurant)-[rel:CONNECTED_TO]->(start)
+                RETURN restaurant.nom AS name, restaurant.latitude AS lat, restaurant.longitude AS lng,
+                       rel.length AS dist
+                ORDER BY rel.length ASC
                 """,
-                current_lat=current_node["latitude"],
-                current_lng=current_node["longitude"]
+                current_lat=current_node["latitude"], current_lng=current_node["longitude"]
             )
 
-            found_restaurant = False
+            next_restaurant = None
             for record in restaurant_result:
-                restaurant_id = record["id_restaurant"]
-                if restaurant_id in visited_restaurants:
-                    continue  # Passer au prochain restaurant si celui-ci a déjà été visité
+                if record["dist"] < 10 and record["name"] not in visited_restaurants and (
+                    not types or record.get("type") in types
+                ):
+                    next_restaurant = record
+                    break
 
-                # Récupérer les détails du restaurant depuis MongoDB
-                restaurant_details = restaurant_collection.find_one({"id_restaurant": restaurant_id})
-                if not restaurant_details:
-                    continue
-
-                # Filtrer par type de restaurant si nécessaire
-                if types and restaurant_details["type_de_restaurant"] not in types:
-                    continue
-
+            if next_restaurant:
                 # Ajouter le restaurant au parcours
                 features.append({
                     "type": "Feature",
                     "geometry": {
                         "type": "Point",
-                        "coordinates": [restaurant_details["longitude"], restaurant_details["latitude"]]
+                        "coordinates": [next_restaurant["lng"], next_restaurant["lat"]]
                     },
                     "properties": {
-                        "name": restaurant_details["nom"],
-                        "type": restaurant_details["type_de_restaurant"],
-                        "distance": record["distance"]
+                        "name": next_restaurant["name"],
+                        "type": next_restaurant.get("type", "Unknown"),
+                        "distance": next_restaurant["dist"]
                     }
                 })
-                total_distance += record["distance"]
-                visited_restaurants.add(restaurant_id)
                 stops_added += 1
-                found_restaurant = True
-                break
+                visited_restaurants.add(next_restaurant["name"])
 
-            if found_restaurant:
-                continue  # Passer directement au prochain nœud sans chercher de voisins
-
-            # Sinon, chercher un nœud voisin pour continuer le parcours
-            neighbor_result = session.run(
-                """
-                MATCH (current:Location {latitude: $current_lat, longitude: $current_lng})
-                MATCH (neighbor:Location)-[r:CYCLEWAY]->(current)
-                WHERE NOT (neighbor.latitude = $current_lat AND neighbor.longitude = $current_lng)
-                RETURN neighbor.latitude AS lat, neighbor.longitude AS lng, r.length AS distance
-                """,
-                current_lat=current_node["latitude"],
-                current_lng=current_node["longitude"]
-            )
-
-            next_node = None
-            for record in neighbor_result:
-                candidate = (record["lat"], record["lng"])
-                if candidate not in visited_nodes:  # Vérifier si le nœud n'a pas été visité
-                    next_node = {
-                        "latitude": record["lat"],
-                        "longitude": record["lng"],
-                        "distance": record["distance"]
+                # Ajouter le segment cyclable
+                features.append({
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "MultiLineString",
+                        "coordinates": [[
+                            [current_node["longitude"], current_node["latitude"]],
+                            [next_restaurant["lng"], next_restaurant["lat"]]
+                        ]]
+                    },
+                    "properties": {
+                        "length": next_restaurant["dist"]
                     }
-                    break
+                })
 
-            if not next_node:
-                break  # Aucun nœud voisin valide trouvé, on arrête la recherche
+                # Mettre à jour le nœud courant
+                current_node = {"latitude": next_restaurant["lat"], "longitude": next_restaurant["lng"]}
+                total_distance += next_restaurant["dist"]
 
-            # Ajouter le segment cyclable au parcours
-            features.append({
-                "type": "Feature",
-                "geometry": {
-                    "type": "LineString",
-                    "coordinates": [
-                        [current_node["longitude"], current_node["latitude"]],
-                        [next_node["longitude"], next_node["latitude"]]
-                    ]
-                },
-                "properties": {
-                    "length": next_node["distance"]
-                }
-            })
+            else:
+                # Trouver le prochain nœud cyclable connecté
+                neighbor_result = session.run(
+                    """
+                    MATCH (start:Location {latitude: $current_lat, longitude: $current_lng})
+                    MATCH (start)-[rel:CYCLEWAY]->(neighbor:Location)
+                    RETURN neighbor.latitude AS lat, neighbor.longitude AS lng,
+                           rel.length AS dist
+                    ORDER BY rel.length ASC
+                    LIMIT 1
+                    """,
+                    current_lat=current_node["latitude"], current_lng=current_node["longitude"]
+                )
+                next_node = neighbor_result.single()
+                if not next_node:
+                    return jsonify({
+                        "error": "Impossible de trouver un prochain noeud pour le parcours.",
+                        "total_distance": total_distance,
+                        "features": features
+                    }), 400
 
-            # Mettre à jour l'état du parcours
-            total_distance += next_node["distance"]
-            current_node = {
-                "latitude": next_node["latitude"],
-                "longitude": next_node["longitude"]
-            }
-            visited_nodes.add((current_node["latitude"], current_node["longitude"]))
+                # Ajouter le segment cyclable
+                features.append({
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "MultiLineString",
+                        "coordinates": [[
+                            [current_node["longitude"], current_node["latitude"]],
+                            [next_node["lng"], next_node["lat"]]
+                        ]]
+                    },
+                    "properties": {
+                        "length": next_node["dist"]
+                    }
+                })
+                current_node = {"latitude": next_node["lat"], "longitude": next_node["lng"]}
+                total_distance += next_node["dist"]
 
-    # Étape 3 : Vérifier que la longueur totale est respectée
-    if total_distance < length * 0.9 or total_distance > length * 1.1:
-        return jsonify({
-            "error": "Impossible de respecter la longueur spécifiée pour le parcours.",
-            "total_distance": total_distance,
-            "features": features
-        }), 400
-
-    # Retourner le GeoJSON du parcours
+        # Vérifier si le parcours respecte la longueur spécifiée
+        if total_distance < length * 0.9 or total_distance > length * 1.1:
+            return jsonify({
+                "error": "Impossible de respecter la longueur spécifiée pour le parcours.",
+                "total_distance": total_distance,
+                "features": features
+            }), 400
+        if stops_added < number_of_stops:
+            return jsonify({
+                "error": "Impossible de respecter le nombre de stops spécifié pour le parcours.",
+                "number_stop_current": stops_added,
+                "total_distance": total_distance,
+                "features": features
+            }), 400
     return jsonify({
         "type": "FeatureCollection",
         "features": features
@@ -306,33 +299,9 @@ def parcours():
 
 
 
-
 def serialize_restaurant(restaurant):
     restaurant['_id'] = str(restaurant['_id'])  # Convertir l'ObjectId en chaîne pour JSON
     return restaurant
-
-
-
-def ensure_graph_projected(session):
-    # Vérifier si le graphe existe
-    graph_exists_query = "CALL gds.graph.exists('cyclewaysGraph') YIELD graphName RETURN graphName"
-    result = session.run(graph_exists_query)
-    if not result.single():
-        # Si le graphe n'existe pas, le projeter
-        session.run("""
-            CALL gds.graph.project(
-                'cyclewaysGraph',
-                ['Location'],
-                {
-                    CYCLEWAY: {
-                        properties: 'length'
-                    }
-                }
-            )
-        """)
-        print("Graph projeté avec succès.")
-    else:
-        print("Le graphe 'cyclewaysGraph' existe déjà.")
 
 
 def location_from_restaurant(restaurantName):
