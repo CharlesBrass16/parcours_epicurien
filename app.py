@@ -171,19 +171,19 @@ def parcours():
 
     # Valider les informations avec le cache global
     last_starting_point = global_cache.get("last_starting_point")
-    if not last_starting_point or \
-            last_starting_point["coordinates"] != starting_point or \
-            last_starting_point["length"] != length or \
-            last_starting_point["types"] != types:
-        return jsonify({
-            "error": "Le starting point ne correspond pas aux informations précédemment générées.",
-            "expected": last_starting_point,
-            "received": {
-                "coordinates": starting_point,
-                "length": length,
-                "types": types
-            }
-        }), 400
+    # if not last_starting_point or \
+    #         last_starting_point["coordinates"] != starting_point or \
+    #         last_starting_point["length"] != length or \
+    #         last_starting_point["types"] != types:
+    #     return jsonify({
+    #         "error": "Le starting point ne correspond pas aux informations précédemment générées.",
+    #         "expected": last_starting_point,
+    #         "received": {
+    #             "coordinates": starting_point,
+    #             "length": length,
+    #             "types": types
+    #         }
+    #     }), 400
 
     features = []  # Liste des éléments GeoJSON
     total_distance = 0
@@ -217,8 +217,8 @@ def parcours():
                 """
                 MATCH (start:Location {latitude: $current_lat, longitude: $current_lng})
                 MATCH (restaurant:Restaurant)-[rel:CONNECTED_TO]->(start)
-                RETURN restaurant.nom AS name, restaurant.latitude AS lat, restaurant.longitude AS lng,
-                       rel.length AS dist
+                RETURN restaurant.id_restaurant AS id_restaurant, restaurant.latitude AS lat, restaurant.longitude AS lng,
+                       restaurant.nom AS name, rel.length AS dist
                 ORDER BY rel.length ASC
                 """,
                 current_lat=current_node["latitude"], current_lng=current_node["longitude"]
@@ -226,15 +226,25 @@ def parcours():
 
             next_restaurant = None
             for record in restaurant_result:
-                if record["dist"] < 10 and record["name"] not in visited_restaurants and (
-                    not types or record.get("type") in types
-                ):
-                    next_restaurant = record
-                    break
+                if record["dist"] < 100 and record["name"] not in visited_restaurants:
+                    # Rechercher le type du restaurant dans MongoDB
+                    mongo_restaurant = restaurant_collection.find_one({"id_restaurant": record["id_restaurant"]})
+                    if mongo_restaurant:
+                        restaurant_type = mongo_restaurant.get("type_de_restaurant", "Unknown")
+                        if not types or restaurant_type in types:
+                            next_restaurant = {
+                                "id_restaurant": record["id_restaurant"],
+                                "name": record["name"],
+                                "latitude": record["lat"],
+                                "longitude": record["lng"],
+                                "distance": record["dist"],
+                                "type": restaurant_type,
+                            }
+                            break  # Arrêter dès qu'on trouve un restaurant valide
 
             if next_restaurant:
                 # Finaliser le segment MultiLineString jusqu'au restaurant
-                current_multiline.append([next_restaurant["lng"], next_restaurant["lat"]])
+                current_multiline.append([next_restaurant["longitude"], next_restaurant["latitude"]])
                 features.append({
                     "type": "Feature",
                     "geometry": {
@@ -250,25 +260,25 @@ def parcours():
                         )
                     }
                 })
-                current_multiline = [[next_restaurant["lng"], next_restaurant["lat"]]]  # Réinitialiser pour le prochain segment
+                current_multiline = [[next_restaurant["longitude"], next_restaurant["latitude"]]]  # Réinitialiser pour le prochain segment
 
                 # Ajouter le restaurant au parcours
                 features.append({
                     "type": "Feature",
                     "geometry": {
                         "type": "Point",
-                        "coordinates": [next_restaurant["lng"], next_restaurant["lat"]]
+                        "coordinates": [next_restaurant["longitude"], next_restaurant["latitude"]]
                     },
                     "properties": {
                         "name": next_restaurant["name"],
                         "type": next_restaurant.get("type", "Unknown"),
-                        "distance": next_restaurant["dist"]
+                        "distance": next_restaurant["distance"]
                     }
                 })
                 stops_added += 1
                 visited_restaurants.add(next_restaurant["name"])
-                current_node = {"latitude": next_restaurant["lat"], "longitude": next_restaurant["lng"]}
-                total_distance += next_restaurant["dist"]
+                current_node = {"latitude": next_restaurant["latitude"], "longitude": next_restaurant["longitude"]}
+                total_distance += next_restaurant["distance"]
 
             else:
                 # Trouver le prochain nœud cyclable connecté
