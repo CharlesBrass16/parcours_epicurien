@@ -10,4 +10,4 @@
 
 ## [1.0.0] - 2024-12-19
 ### Modifié
--À fin d'améliorer la vitesse de chargements de données en BD, nous avons opter pour garder 500 restaurants et 500 noeuds de piste cyclabes
+-À fin d'améliorer la vitesse de chargements de données en BD, nous avons opté pour garder 500 restaurants et 500 noeuds de piste cyclabes
