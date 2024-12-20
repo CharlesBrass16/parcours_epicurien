@@ -1,4 +1,5 @@
 import pandas as pd
+import random
 
 def format_address(row):
     address_parts = [row.get('addr:housenumber'), row.get('addr:street'), row.get('addr:postcode'), row.get('addr:city')]
@@ -30,10 +31,13 @@ def determine_service_type(description):
     else:
         return "Standard"
 
-def transform_data():
+def transform_data(max_restaurants=500, max_cycleways_nodes=500):
     # Transformation des restaurants
     restaurants = pd.read_csv("data/restaurants_paris.csv")
     restaurants = restaurants.dropna(subset=["latitude", "longitude"])
+
+    # Échantillonner les restaurants (max_restaurants)
+    restaurants = restaurants.sample(n=min(len(restaurants), max_restaurants), random_state=42)
 
     # Créer la colonne adresse_complete en format canadien
     restaurants['adresse_complete'] = restaurants.apply(format_address, axis=1)
@@ -60,6 +64,11 @@ def transform_data():
 
     # Transformation des pistes cyclables
     cycleways = pd.read_csv("data/cycleways_paris.csv")
+
+    # Extraire les 5000 nœuds les plus pertinents
+    cycleways = cycleways.head(max_cycleways_nodes)
+
+    # Calculer les longueurs des segments (si nécessaire)
     cycleways['length'] = cycleways['coordinates'].apply(lambda x: len(eval(x)) if x else 0)
 
     # Sauvegarder les données transformées
@@ -70,4 +79,5 @@ def transform_data():
     return restaurants, cycleways
 
 
+# Appeler la fonction
 transform_data()
