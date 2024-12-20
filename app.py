@@ -96,6 +96,7 @@ def type():
     return jsonify(list(set(restaurants_data)))
 
 
+
 @app.route('/starting_point', methods=['POST'])
 def starting_point():
     payload = request.get_json()
@@ -118,7 +119,7 @@ def starting_point():
             except:
                 continue
             result = get_starting_points(point_recherche['latitude'], point_recherche['longitude'], min_length,
-                                         max_length)
+                                         max_length, length)
 
     else:
         restaurants = list(restaurant_collection.find({'type_de_restaurant': {'$in': types}}))
@@ -226,7 +227,7 @@ def parcours():
 
             next_restaurant = None
             for record in restaurant_result:
-                if record["dist"] < 30 and record["name"] not in visited_restaurants:
+                if record["dist"] < 1000 and record["name"] not in visited_restaurants:
                     # Rechercher le type du restaurant dans MongoDB
                     mongo_restaurant = restaurant_collection.find_one({"id_restaurant": record["id_restaurant"]})
                     if mongo_restaurant:
@@ -279,6 +280,32 @@ def parcours():
                 visited_restaurants.add(next_restaurant["name"])
                 current_node = {"latitude": next_restaurant["latitude"], "longitude": next_restaurant["longitude"]}
                 total_distance += next_restaurant["distance"]
+
+
+                result_loc = session.run("""
+                    MATCH (r:Restaurant {id_restaurant: $id_restaurant})
+                    MATCH (r)-[rel:CONNECTED_TO]->(loc:Location)
+                    RETURN loc.latitude AS lat, loc.longitude AS lng, rel.length AS dist
+                    ORDER BY dist ASC
+                    LIMIT 1
+                """, id_restaurant=next_restaurant["id_restaurant"])
+
+                record_loc = result_loc.single()
+                if record_loc:
+                    current_node = {"latitude": record_loc["lat"], "longitude": record_loc["lng"]}
+                    # total_distance += record_loc["dist"]
+                else:
+                    return jsonify({
+                        "error": "Impossible de trouver un Location connecté au restaurant pour continuer le parcours.",
+                        "total_distance": total_distance,
+                        "features": features
+                    }), 400
+
+
+
+
+
+
 
             else:
                 # Trouver le prochain nœud cyclable connecté
@@ -345,23 +372,24 @@ def location_from_restaurant(restaurantName):
         return result.single()["pointPiste"]
 
 
-def get_starting_points(latitude, longitude, minLength, maxLength):
+def get_starting_points(latitude, longitude, minLength, maxLength, length):
     with neo4j_driver.session() as session:
         result = session.run(
             """
-            MATCH path = (start:Location {latitude: $lat, longitude: $lon})-[:CYCLEWAY*..10]->(end:Location)
+            MATCH path = (start:Location {latitude: $lat, longitude: $lon})-[:CYCLEWAY*..20]->(end:Location)
             WITH path, 
                  reduce(distance = 0, rel IN relationships(path) | distance + rel.length) AS totalDistance, 
                  nodes(path)[-1] AS lastNode
             WHERE totalDistance >= $minDist AND totalDistance <= $maxDist
             RETURN lastNode, totalDistance
-            ORDER BY totalDistance DESC
+            ORDER BY abs(totalDistance - $length) ASC
             LIMIT 1
             """,
             lat=latitude,
             lon=longitude,
             minDist=minLength,
-            maxDist=maxLength
+            maxDist=maxLength,
+            length=length
         )
 
         resList = []
@@ -384,6 +412,7 @@ def calculate_distance(lat1, lng1, lat2, lng2):
     c = 2 * atan2(sqrt(a), sqrt(1 - a))
 
     return R * c
+
 
 
 if __name__ == '__main__':

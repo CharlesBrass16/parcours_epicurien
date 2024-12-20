@@ -33,7 +33,13 @@ def load_to_mongo():
     collection.insert_many(restaurants)
     print("Données de restaurants chargées dans MongoDB.")
 
-
+def add_link(session, lat1, lon1, lat2, lon2, distance=50, name="Lien ajouté"):
+        session.run("""
+        MATCH (a:Location {latitude: $lat1, longitude: $lon1})
+        MATCH (b:Location {latitude: $lat2, longitude: $lon2})
+        MERGE (a)-[:CYCLEWAY {name: $name, length: $distance}]->(b)
+        MERGE (b)-[:CYCLEWAY {name: $name, length: $distance}]->(a)
+    """, lat1=lat1, lon1=lon1, lat2=lat2, lon2=lon2, distance=distance, name=name)
 
 def load_to_neo4j():
     driver = GraphDatabase.driver("bolt://neo4j:7687", auth=("neo4j", "password"))
@@ -143,6 +149,56 @@ def load_to_neo4j():
                 )
 
         print("Restaurants connectés aux pistes cyclables et chargés dans Neo4j.")
+
+        
+        add_link(session, 48.8411127, 2.3247417, 48.8562529, 2.3567022)
+        add_link(session, 48.8562529, 2.3567022, 48.856641, 2.3549542)
+        add_link(session, 48.856641, 2.3549542, 48.8869148, 2.3324769)
+        add_link(session, 48.8869148, 2.3324769, 48.8738713, 2.2957297)
+        add_link(session, 48.8738713, 2.2957297, 48.8750361, 2.2914629)
+        add_link(session, 48.8750361, 2.2914629, 48.8652664, 2.3272303)
+        add_link(session, 48.8652664, 2.3272303, 48.8436818, 2.370984)
+        add_link(session, 48.8641531, 2.3513847, 48.8567026, 2.3549917)
+        add_link(session, 48.8412731, 2.3248713, 48.8582782, 2.2722058)
+        add_link(session, 48.8569033, 2.2663846, 48.8573959, 2.2649131)
+        add_link(session, 48.8578736, 2.268689, 48.8631744, 2.3338823)
+        add_link(session, 48.8631744, 2.3338823, 48.8511554, 2.4127625)
+        add_link(session, 48.8511554, 2.4127625,48.8293222, 2.3605988)
+        add_link(session, 48.829288, 2.3607131, 48.8741656, 2.3376206)
+        add_link(session, 48.8741541,2.3380375,48.8644974, 2.3186104)
+        add_link(session, 48.8644974, 2.3186104,48.8747986, 2.3795184)
+        add_link(session,48.8747658, 2.3795742, 48.8997745, 2.3740653)
+        add_link(session, 48.899827, 2.3740634, 48.8297868, 2.3339636)
+        add_link(session,48.899827, 2.3740634, 48.8706506, 2.4107272)
+        add_link(session, 48.8435701, 2.3711792, 48.8646683, 2.4046572)
+        add_link(session, 48.8435701, 2.3711792,48.8488486,2.3719438 )
+        add_link(session, 48.8488486,2.3719438, 48.8407126,	2.2683007 )
+        add_link(session, 48.8414184, 2.2691846, 48.8678939, 2.4109962)
+        add_link(session, 48.8678957,2.4110853, 48.8664689, 2.3614585)
+        add_link(session, 48.8646815, 2.3596085, 48.8642601, 2.3205046)
+        add_link(session, 48.8646815, 2.3596085, 48.8690008,2.2735833 )
+        add_link(session, 48.8646815, 2.3596085, 48.8410338,2.4132626 )
+        add_link(session, 48.8398744, 2.4131365,48.874089,2.4130448 )
+        add_link(session,48.8385515,2.2554848,48.8764031,2.4124033)
+        add_link(session,48.8768057,2.4119691,48.8842239,2.3690463 )
+        add_link(session,48.8842941,2.3689214,48.8549763,2.3536359 )
+        add_link(session,48.8842941,2.3689214,48.865737,2.4114338)
+        add_link(session,48.8544834,2.3549097,48.8466011,2.3667972)
+        add_link(session,48.8512044,2.3689901, 48.8410382,2.3743215)
+        add_link(session,48.8410853,2.3742944,48.8351772,2.4068403)
+        add_link(session,48.8350334,2.4072374,48.8464002,2.413433)
+        add_link(session,48.8464002,2.413433,48.8276761,2.3264288)
+        add_link(session,48.8277538,2.3265476,48.8577632,2.2629752)
+        add_link(session,48.8577632,2.2629752,48.8759191,2.2809144)
+        add_link(session,48.8566442,2.2624977,48.8536609,2.4121988 )
+        add_link(session,48.8566442,2.2624977,48.8989625, 2.3810525)
+        add_link(session, 48.8989625, 2.3810525,48.8986488,2.3713497)
+        add_link(session, 48.8512044, 2.3689901, 48.8517503, 2.3693387)
+        add_link(session,48.8517503, 2.3693387, 48.83435, 2.409537)
+        add_link(session,48.8517503, 2.3693387, 48.8321312, 2.3797185)
+        add_link(session,48.8517503, 2.3693387,	48.8749445,	2.3049905)
+
+        print("Liens supplémentaires ajoutés entre sous-graphes.")
 
 
 
