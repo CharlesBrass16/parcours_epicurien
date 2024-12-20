@@ -227,7 +227,7 @@ def parcours():
 
             next_restaurant = None
             for record in restaurant_result:
-                if record["dist"] < 1000 and record["name"] not in visited_restaurants:
+                if record["dist"] < 100 and record["name"] not in visited_restaurants:
                     # Rechercher le type du restaurant dans MongoDB
                     mongo_restaurant = restaurant_collection.find_one({"id_restaurant": record["id_restaurant"]})
                     if mongo_restaurant:
@@ -300,12 +300,6 @@ def parcours():
                         "total_distance": total_distance,
                         "features": features
                     }), 400
-
-
-
-
-
-
 
             else:
                 # Trouver le prochain nœud cyclable connecté
@@ -412,6 +406,7 @@ def calculate_distance(lat1, lng1, lat2, lng2):
     c = 2 * atan2(sqrt(a), sqrt(1 - a))
 
     return R * c
+
 
 
 
