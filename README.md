@@ -41,3 +41,22 @@ Une fois le projet démarré, les comptes de restaurants par type ainsi que la t
 http://localhost:80/transformed_data
 ```
 
+Une fois le projet démarré, l'obtention du fichier README est accessible via:
+```bash
+http://localhost:80/readme
+```
+
+Une fois le projet démarré, l'obtention des différents types de restaurant sont accessibles via:
+```bash
+http://localhost:80/type
+```
+
+Une fois le projet démarré, l'obtention d'un point de départ de parcours est accessible via:
+```bash
+http://localhost:80/starting_point
+```
+
+Une fois le projet démarré, l'obtention d'un parcours est accessible via:
+```bash
+http://localhost:80/parcours
+```

@@ -106,7 +106,7 @@ def starting_point():
     types = payload["type"]  # Liste de strings
     random_restaurant = None
 
-    max_length = length * 1.1
+    max_length = length 
     min_length = 20
     result = []
 
@@ -225,9 +225,16 @@ def parcours():
                 current_lat=current_node["latitude"], current_lng=current_node["longitude"]
             )
 
+            if stops_added == number_of_stops - 1:  # Dernier arrêt
+                distance_target = length - total_distance  # Distance restante
+                tolerance = max(distance_target * 0.5, 100)  
+            else:
+                distance_target = length / number_of_stops
+                tolerance = max(distance_target * 0.5, 100)
+            
             next_restaurant = None
             for record in restaurant_result:
-                if record["dist"] < 100 and record["name"] not in visited_restaurants:
+                if abs(record["dist"] - distance_target) <= tolerance and record["name"] not in visited_restaurants:
                     # Rechercher le type du restaurant dans MongoDB
                     mongo_restaurant = restaurant_collection.find_one({"id_restaurant": record["id_restaurant"]})
                     if mongo_restaurant:
@@ -279,7 +286,11 @@ def parcours():
                 stops_added += 1
                 visited_restaurants.add(next_restaurant["name"])
                 current_node = {"latitude": next_restaurant["latitude"], "longitude": next_restaurant["longitude"]}
-                total_distance += next_restaurant["distance"]
+                segment_distance = calculate_distance(
+                current_multiline[-1][1], current_multiline[-1][0],
+                next_restaurant["latitude"], next_restaurant["longitude"]
+                )
+                total_distance += segment_distance
 
 
                 result_loc = session.run("""
@@ -293,7 +304,6 @@ def parcours():
                 record_loc = result_loc.single()
                 if record_loc:
                     current_node = {"latitude": record_loc["lat"], "longitude": record_loc["lng"]}
-                    # total_distance += record_loc["dist"]
                 else:
                     return jsonify({
                         "error": "Impossible de trouver un Location connecté au restaurant pour continuer le parcours.",
@@ -322,10 +332,64 @@ def parcours():
                         "features": features
                     }), 400
 
+                segment_distance = calculate_distance(
+                current_multiline[-1][1], current_multiline[-1][0],
+                next_node["lat"], next_node["lng"]
+                )
+                total_distance += segment_distance
+
                 # Ajouter au segment courant
                 current_multiline.append([next_node["lng"], next_node["lat"]])
+                current_multiline = [[next_node["lng"], next_node["lat"]]]
                 current_node = {"latitude": next_node["lat"], "longitude": next_node["lng"]}
-                total_distance += next_node["dist"]
+
+        
+        if total_distance < length * 0.9:
+            remaining_distance = length - total_distance
+            while total_distance < length * 0.9:
+                # Rechercher un nœud cyclable pour combler la distance restante
+                neighbor_result = session.run(
+                    """
+                    MATCH (start:Location {latitude: $current_lat, longitude: $current_lng})
+                    MATCH (start)-[rel:CYCLEWAY]->(neighbor:Location)
+                    WHERE rel.length <= $remaining_distance
+                    RETURN neighbor.latitude AS lat, neighbor.longitude AS lng,
+                        rel.length AS dist
+                    ORDER BY rel.length ASC
+                    LIMIT 1
+                    """,
+                    current_lat=current_node["latitude"],
+                    current_lng=current_node["longitude"],
+                    remaining_distance=remaining_distance
+                )
+                next_node = neighbor_result.single()
+                if not next_node:
+                    print("Aucun segment cyclable trouvé pour combler la distance.")
+                    break
+
+                segment_distance = calculate_distance(
+                    current_multiline[-1][1], current_multiline[-1][0],
+                    next_node["lat"], next_node["lng"]
+                )
+                if segment_distance > remaining_distance:
+                    print(f"Segment trop long ignoré : {segment_distance} mètres.")
+                    break
+
+                total_distance += segment_distance
+                current_multiline.append([next_node["lng"], next_node["lat"]])
+                features.append({
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "MultiLineString",
+                        "coordinates": [current_multiline]
+                    },
+                    "properties": {
+                        "length": segment_distance
+                    }
+                })
+                current_multiline = [[next_node["lng"], next_node["lat"]]]
+                current_node = {"latitude": next_node["lat"], "longitude": next_node["lng"]}
+                remaining_distance = length - total_distance
 
         # Vérifier si le parcours respecte la longueur spécifiée
         if total_distance < length * 0.9 or total_distance > length * 1.1:
@@ -376,7 +440,7 @@ def get_starting_points(latitude, longitude, minLength, maxLength, length):
                  nodes(path)[-1] AS lastNode
             WHERE totalDistance >= $minDist AND totalDistance <= $maxDist
             RETURN lastNode, totalDistance
-            ORDER BY abs(totalDistance - $length) ASC
+            ORDER BY totalDistance ASC 
             LIMIT 1
             """,
             lat=latitude,
