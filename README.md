@@ -24,6 +24,7 @@ cd veloEpicurien
 ```bash
 docker-compose up --build
 ```
+
 ## Accès à l'application
 
 Une fois le projet démarré, l'application est accessible via :
