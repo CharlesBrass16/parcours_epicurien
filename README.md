@@ -40,7 +40,7 @@ Ce script est responsable de l’extraction des données brutes :
 
 - stockage sans transformation majeure
 
-👉 Objectif : collecter les données telles quelles
+# Objectif : collecter les données telles quelles
 
 🔹 transform.py
 
@@ -54,7 +54,7 @@ Ce script transforme les données extraites :
 
 - structuration pour analyse
 
-👉 Objectif : rendre les données exploitables et cohérentes
+# Objectif : rendre les données exploitables et cohérentes
 
 🔹 load.py
 
@@ -64,9 +64,9 @@ Ce script charge les données transformées :
 
 - préparation pour l’accès via l’API Flask
 
-👉 Objectif : rendre les données disponibles pour l’application
+# Objectif : rendre les données disponibles pour l’application
 
-🌐 Fonctionnement global de l'application
+## Fonctionnement global de l'application
 
 Les données sont extraites (extract.py)
 
@@ -82,7 +82,7 @@ L’API Flask permet ensuite de :
 
 - explorer les statistiques
 
-🚀 Ce que permet l'application
+## Ce que permet l'application
 
 L’application permet notamment :
 
